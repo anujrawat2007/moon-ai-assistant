@@ -1,0 +1,12 @@
+# Core APIs (Free cloud intelligence)
+google-genai
+groq
+python-dotenv
+requests
+
+# Voice (Free Edge-TTS with sweet anime pitch)
+edge-tts
+
+# Desktop & Vision
+pillow
+pyautogui

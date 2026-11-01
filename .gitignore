@@ -1,0 +1,26 @@
+# Environment variables (Never commit secret API keys)
+.env
+.env.local
+.env.*.local
+
+# Python Virtual Environment
+venv/
+ENV/
+env/
+.venv/
+
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temporary audio files
+data/*.mp3
+data/*.wav
+data/temp_*
+
+# OS / Editor files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
