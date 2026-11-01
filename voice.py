@@ -163,3 +163,4 @@ if __name__ == "__main__":
     vm = VoiceManager()
     print("Testing VoiceManager speak...")
     vm.speak("[emotion: happy] Hello Master! Moon ka voice engine bilkul ready hai!")
+

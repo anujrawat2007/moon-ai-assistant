@@ -155,3 +155,4 @@ if __name__ == "__main__":
     print("Testing PCTools image crawler...")
     res = tools.download_images_to_folder("anime scenery wallpaper", "Moon_Test_Wallpapers", 2)
     print(res)
+

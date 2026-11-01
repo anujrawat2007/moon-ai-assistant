@@ -1,6 +1,7 @@
 @echo off
-title Moon - AI Desktop Companion
+title MOON - AI Web Companion & Assistant
 cd /d "%~dp0"
+echo Starting MOON Web Companion...
 call .\venv\Scripts\activate
-python main.py
+python app.py
 pause

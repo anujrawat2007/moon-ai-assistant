@@ -224,3 +224,4 @@ if __name__ == "__main__":
     engine = AvatarEngine()
     print("AvatarEngine started! Floating on desktop.")
     engine.run()
+
