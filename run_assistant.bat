@@ -1,8 +1,6 @@
 @echo off
-title Moon AI Assistant (Lumina)
+title Suzune Horikita - AI Desktop Assistant
 cd /d "%~dp0"
-echo Starting Moon AI Assistant...
 call .\venv\Scripts\activate
 python main.py
 pause
-

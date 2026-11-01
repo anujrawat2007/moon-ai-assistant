@@ -1,12 +1,17 @@
-# Core APIs (Free cloud intelligence)
+# Core AI Brain & STT (Free Cloud)
 google-genai
 groq
 python-dotenv
 requests
 
-# Voice (Free Edge-TTS with sweet anime pitch)
+# Audio & Voice (Free Edge-TTS + Direct Hardware Sound)
 edge-tts
+sounddevice
+soundfile
+numpy
 
-# Desktop & Vision
+# Vision & Desktop Automation
 pillow
 pyautogui
+mss
+opencv-python-headless
