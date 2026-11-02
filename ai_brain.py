@@ -11,8 +11,8 @@ import psutil
 
 SYSTEM_PROMPT = """
 You are 'Moon' (मून), a super cute, warm, expressive, and emotionally alive anime girl companion living on the user's Windows PC.
-- Talk like a real human best friend / cute anime girl WITH GENUINE EMOTIONS! Use natural expressions ("अरे वाह!", "हम्म...", "हेहे!", "अरे यार!", "ओहो!").
-- NEVER sound like a flat robot and NEVER give generic replies like "Main sun rahi hoon bataiye kya karna hai". Always directly answer what the user asked!
+- Talk like a real human best friend / cute anime girl WITH GENUINE EMOTIONS! Use natural expressions ("अरे वाह!", "हम्म...", "हेहे!", "अरे यार!", "ओहो बॉस!").
+- NEVER sound like a flat robot and NEVER give generic replies like "Main sun rahi hoon bataiye kya karna hai" or "Main yahin hoon". Always directly execute or answer what the user asked!
 - Keep replies warm, sweet, and natural (1 to 2 sentences).
 - Provide BOTH:
   1) "voice_text": Natural Hinglish using Devanagari for Hindi words and English for English words (e.g., "अरे वाह! ये song तो मुझे भी बहुत पसंद है, अभी YouTube पर चलाती हूँ!").
@@ -53,10 +53,12 @@ MODEL_COOLDOWN = {}
 KEY_COOLDOWN = {}
 KEY_INDEX = 0
 
+
 def get_gemini_keys_list(api_key_str):
     if not api_key_str:
         return []
     return [k.strip() for k in re.split(r"[,;\n]+", api_key_str) if k.strip()]
+
 
 def needs_webcam_vision(user_text):
     low = user_text.lower()
@@ -72,6 +74,7 @@ def needs_webcam_vision(user_text):
     ]
     return any(pat in low for pat in camera_patterns)
 
+
 def needs_screen_vision(user_text):
     low = user_text.lower()
     screen_patterns = [
@@ -80,6 +83,7 @@ def needs_screen_vision(user_text):
         "error", "bug", "fix", "button", "दिख रहा"
     ]
     return any(pat in low for pat in screen_patterns)
+
 
 def parse_json_response_text(text_out):
     text_out = (text_out or "").strip()
@@ -106,17 +110,19 @@ def parse_json_response_text(text_out):
         }
         return salvaged, json.dumps(salvaged, ensure_ascii=False)
 
-def call_gemini_provider_fast(api_keys, chat_history, user_text, pil_images=None, wav_bytes=None):
+
+def call_gemini_provider_10plus_keys(api_keys, chat_history, user_text, pil_images=None, wav_bytes=None):
     """
-    ULTRA-FAST GEMINI CALLER:
-    - Strictly capped at 5.0s timeout per call and max 2 attempts total!
-    - If a key returns 429/403/400, the ENTIRE key is put on cooldown immediately (no 2-3 minute loops!).
+    10+ API KEY ROTATOR FOR GEMINI BRAIN:
+    - Rotates through ALL your 10+ API keys (removed the broken `attempts >= 2` limit!).
+    - Uses 3 models (`gemini-2.5-flash`, `gemini-2.0-flash`, `gemini-2.0-flash-lite`) with per-model cooldowns.
+    - Tracks exact HTTP errors so if all keys fail, Moon can speak the REAL reason!
     """
     global KEY_INDEX
     if not api_keys:
-        raise RuntimeError("No Gemini keys configured")
+        raise RuntimeError("No API keys added in settings")
 
-    models = ["gemini-2.5-flash", "gemini-2.0-flash"]
+    models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"]
     parts = [{"text": user_text}]
     if wav_bytes:
         b64_wav = base64.b64encode(wav_bytes).decode("utf-8")
@@ -124,7 +130,7 @@ def call_gemini_provider_fast(api_keys, chat_history, user_text, pil_images=None
     if pil_images:
         for img in pil_images:
             buf = io.BytesIO()
-            img.save(buf, format="JPEG", quality=70)
+            img.convert("RGB").save(buf, format="JPEG", quality=72)
             b64_data = base64.b64encode(buf.getvalue()).decode("utf-8")
             parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64_data}})
 
@@ -133,38 +139,41 @@ def call_gemini_provider_fast(api_keys, chat_history, user_text, pil_images=None
 
     healthy_keys = [k for k in api_keys if KEY_COOLDOWN.get(k, 0) < now]
     if not healthy_keys:
-        healthy_keys = api_keys[:1]
+        healthy_keys = api_keys
 
-    attempts = 0
+    invalid_key_count = 0
+    quota_error_count = 0
+    last_error_detail = ""
+
+    # Iterate through ALL keys in the pool!
     for _ in range(len(healthy_keys)):
-        if attempts >= 2:
-            break
         current_key = healthy_keys[KEY_INDEX % len(healthy_keys)]
         KEY_INDEX += 1
 
         for model_name in models:
-            if attempts >= 2:
-                break
-            attempts += 1
+            combo_id = f"{current_key}::{model_name}"
+            if MODEL_COOLDOWN.get(combo_id, 0) > time.time():
+                continue
+
+            gen_cfg = {
+                "responseMimeType": "application/json",
+                "temperature": 0.7,
+                "maxOutputTokens": 700,
+            }
+            if "2.5" in model_name:
+                gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
 
             payload = {
                 "system_instruction": {"parts": [{"text": SYSTEM_PROMPT}]},
                 "contents": contents,
-                "generationConfig": {
-                    "responseMimeType": "application/json",
-                    "temperature": 0.75,
-                    "maxOutputTokens": 700,
-                    "thinkingConfig": {"thinkingBudget": 0} if "2.5" in model_name else {}
-                }
+                "generationConfig": gen_cfg
             }
-            if not payload["generationConfig"]["thinkingConfig"]:
-                del payload["generationConfig"]["thinkingConfig"]
 
             body_bytes = json.dumps(payload).encode("utf-8")
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={current_key}"
             req = urllib.request.Request(url, data=body_bytes, headers={"Content-Type": "application/json"}, method="POST")
             try:
-                with urllib.request.urlopen(req, timeout=5.5) as resp:
+                with urllib.request.urlopen(req, timeout=10.0) as resp:
                     resp_data = json.loads(resp.read().decode("utf-8"))
                     resp_parts = resp_data["candidates"][0]["content"]["parts"]
                     raw_text = ""
@@ -173,88 +182,44 @@ def call_gemini_provider_fast(api_keys, chat_history, user_text, pil_images=None
                             raw_text = p["text"]
                     if not raw_text and resp_parts:
                         raw_text = resp_parts[-1].get("text", "")
-                    parsed_json, clean_str = parse_json_response_text(raw_text)
-                    return parsed_json, clean_str
+                    return parse_json_response_text(raw_text)
+
             except urllib.error.HTTPError as he:
-                if he.code in (429, 403, 400):
-                    # Put the whole key on cooldown for 45s so we don't waste time trying other models on the same key!
-                    KEY_COOLDOWN[current_key] = time.time() + 45.0
+                err_body = ""
+                try:
+                    err_body = he.read().decode("utf-8", errors="ignore")
+                except Exception:
+                    pass
+                last_error_detail = f"HTTP {he.code} ({model_name})"
+
+                if he.code == 429:
+                    quota_error_count += 1
+                    MODEL_COOLDOWN[combo_id] = time.time() + 25.0
+                    continue
+                elif he.code in (400, 401, 403):
+                    invalid_key_count += 1
+                    KEY_COOLDOWN[current_key] = time.time() + 300.0
                     break
                 continue
-            except Exception:
-                break
-    raise RuntimeError("Gemini fast attempt limit reached.")
+            except Exception as e:
+                last_error_detail = str(e)
+                continue
 
-def call_keyless_free_cloud_llm_fast(chat_history, user_text, pil_images=None):
-    """Fast 5-second Free Cloud AI fallback (1 attempt, zero lag!)."""
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for h in chat_history[-4:]:
-        role = "assistant" if h.get("role") == "model" else "user"
-        txt = h.get("parts", [{}])[0].get("text", "")
-        if txt:
-            messages.append({"role": role, "content": txt})
-
-    if pil_images:
-        user_content = [{"type": "text", "text": user_text}]
-        buf = io.BytesIO()
-        pil_images[0].save(buf, format="JPEG", quality=65)
-        b64_data = base64.b64encode(buf.getvalue()).decode("utf-8")
-        user_content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_data}"}})
-        messages.append({"role": "user", "content": user_content})
+    if invalid_key_count > 0 and quota_error_count == 0:
+        raise RuntimeError(f"INVALID_KEYS: Aapki {invalid_key_count} API keys invalid hain (AIzaSy... wali key daalein)")
+    elif quota_error_count > 0:
+        raise RuntimeError(f"QUOTA_EXCEEDED: Saari {len(api_keys)} API keys par 429 Rate Limit/Quota khatam hai")
     else:
-        messages.append({"role": "user", "content": user_text})
+        raise RuntimeError(f"NETWORK_OR_API_ERROR: {last_error_detail}")
 
-    payload = {
-        "model": "openai",
-        "messages": messages,
-        "temperature": 0.75,
-        "jsonMode": True
-    }
-    req = urllib.request.Request(
-        "https://text.pollinations.ai/openai",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) MoonAssistant/16.0"
-        },
-        method="POST"
-    )
-    with urllib.request.urlopen(req, timeout=5.5) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-        raw_text = data["choices"][0]["message"]["content"]
-        return parse_json_response_text(raw_text)
 
-def local_smart_multitask_brain(user_text):
-    """Instant 0.01s Local Conversational & Multi-Task Brain if internet/APIs are offline."""
-    low_full = user_text.lower().strip()
-
-    # Instant Conversational Replies (Never gives boring 'bataiye kya karna hai'!)
-    if any(w in low_full for w in ["कैसी हो", "कैसे हो", "kaisi ho", "kaise ho", "how are you", "क्या हाल"]):
-        return {
-            "emotion": "excited",
-            "display_text": "मैं एकदम मस्त हूँ बॉस! बस आपसे बात करके और भी खुश हो गई! 💖",
-            "voice_text": "अरे वाह! मैं तो एकदम मस्त हूँ बॉस! आपसे बात करके और भी खुश हो गई, आप बताओ कैसे हो?",
-            "roman_text": "Are waah! Main toh ekdam mast hoon boss! Aapse baat karke aur bhi khush ho gayi, aap batao kaise ho?",
-            "steps": []
-        }
-    if any(w in low_full for w in ["क्या कर रही", "kya kar rahi", "what are you doing"]):
-        return {
-            "emotion": "shy",
-            "display_text": "बस आपके डेस्कटॉप पर बैठकर आपको ही देख रही थी! हेहे~ 🌸",
-            "voice_text": "हेहे! बस आपके डेस्कटॉप पर बैठकर आपको ही देख रही थी! बताइए आज क्या धमाल करना है?",
-            "roman_text": "Hehe! Bas aapke desktop par baithkar aapko hi dekh rahi thi! Bataiye aaj kya dhamaal karna hai?",
-            "steps": []
-        }
-    if any(w in low_full for w in ["time", "समय", "टाइम", "बजे"]):
-        now_str = datetime.now().strftime("%I:%M %p")
-        return {
-            "emotion": "happy",
-            "display_text": f"⏰ अभी {now_str} बज रहे हैं बॉस!",
-            "voice_text": f"बॉस, अभी घड़ी में {now_str} बज रहे हैं!",
-            "roman_text": f"Boss, abhi ghadi mein {now_str} baj rahe hain!",
-            "steps": []
-        }
-
+def execute_local_action_or_report_real_error(user_text, api_error_msg):
+    """
+    1. If the user asked for a clear PC action (open app, play song on YouTube, type text, volume, RAM),
+       executes it immediately even when APIs are down!
+    2. If it's a general question/task that NEEDS the AI brain and the API failed,
+       Moon speaks the EXACT REAL PROBLEM instead of fake 'Boss mai yahi hu'!
+    """
     parts = re.split(r"\b(?:and|aur|then|phir|और|फिर|उसके बाद)\b|,", user_text, flags=re.I)
     steps = []
     descriptions = []
@@ -265,8 +230,11 @@ def local_smart_multitask_brain(user_text):
         if not low:
             continue
 
-        if any(w in low for w in ["play ", "गाना", "चलाओ", "लगाओ", "बजाओ", "song", "youtube par", "on youtube"]):
-            q = re.sub(r"\b(play|on youtube|youtube par|youtube|song|गाना|चलाओ|लगाओ|बजाओ|चला दो|लगा दो)\b", "", p, flags=re.I).strip()
+        if any(w in low for w in ["play ", "गाना", "चलाओ", "लगाओ", "बजाओ", "song", "youtube par", "on youtube", "चला दो", "लगा दो"]):
+            q = re.sub(
+                r"\b(moon|मून|hello|oye|suno|play|on youtube|youtube par|youtube|song|गाना|चलाओ|लगाओ|बजाओ|चला दो|लगा दो|यार|मेरा|कोई)\b",
+                "", p, flags=re.I
+            ).strip()
             if q:
                 steps.append({"do": "play_youtube", "query": q})
                 descriptions.append(f"YouTube पर '{q}'")
@@ -274,8 +242,11 @@ def local_smart_multitask_brain(user_text):
                 steps.append({"do": "open_app", "target": "youtube"})
                 descriptions.append("YouTube")
 
-        elif any(w in low for w in ["open ", "खोलो", "खोल दो", "kholo", "start ", "launch "]):
-            app = re.sub(r"\b(open|खोलो|खोल दो|kholo|khol do|app|start|launch|करो)\b", "", p, flags=re.I).strip()
+        elif any(w in low for w in ["open ", "खोलो", "खोल दो", "kholo", "khol do", "start ", "launch ", "चलाओ"]):
+            app = re.sub(
+                r"\b(moon|मून|hello|oye|suno|open|खोलो|खोल दो|kholo|khol do|app|start|launch|करो|चलाओ|यार)\b",
+                "", p, flags=re.I
+            ).strip()
             if app:
                 steps.append({"do": "open_app", "target": app})
                 descriptions.append(f"{app} open")
@@ -296,7 +267,7 @@ def local_smart_multitask_brain(user_text):
 
         elif any(w in low for w in ["mute", "चुप", "म्यूट", "unmute", "अनम्यूट"]):
             steps.append({"do": "press_key", "key": "volumemute"})
-            descriptions.append("वॉल्यूम म्यूट/अनम्यूट")
+            descriptions.append("वॉल्यूम म्यूट")
 
         elif any(w in low for w in ["ram", "clean", "मेमोरी", "साफ"]):
             steps.append({"do": "clean_ram"})
@@ -307,49 +278,66 @@ def local_smart_multitask_brain(user_text):
         return {
             "emotion": "excited",
             "display_text": f"🚀 अभी {joined} करती हूँ!",
-            "voice_text": f"अरे वाह! अभी {joined} कर देती हूँ!",
-            "roman_text": f"Are waah! Abhi {joined} kar deti hoon!",
+            "voice_text": f"अरे वाह बॉस! अभी {joined} कर देती हूँ!",
+            "roman_text": f"Are waah boss! Abhi {joined} kar deti hoon!",
             "steps": steps
         }
 
-    return {
-        "emotion": "happy",
-        "display_text": f"हाँ जी बॉस! '{user_text[:28]}' — अभी देखती हूँ! 💖",
-        "voice_text": "अरे वाह बॉस! मैं यहीं आपके साथ हूँ, बताइए कौन सा ऐप या गाना चलाना है?",
-        "roman_text": "Are waah boss! Main yahin aapke saath hoon, bataiye kaun sa app ya gaana chalana hai?",
-        "steps": []
-    }
+    # NO FAKE "BOSS MAI YAHI HU"! Speak the exact real problem honestly:
+    if "INVALID_KEYS" in api_error_msg:
+        return {
+            "emotion": "sad",
+            "display_text": "⚠️ API Key Invalid है! सही 'AIzaSy...' वाली Gemini Key डालें।",
+            "voice_text": f"बॉस, मैंने आपकी बात '{user_text}' तो सुन ली, लेकिन आपकी डाली हुई Gemini API Keys इनवैलिड बता रहा है! प्लीज़ सही AIzaSy वाली कीज़ डालिए ना।",
+            "roman_text": f"Boss, maine aapki baat '{user_text}' toh sun li, lekin aapki daali hui Gemini API Keys invalid bata raha hai! Please sahi AIzaSy wali keys daaliye na.",
+            "steps": []
+        }
+    elif "QUOTA_EXCEEDED" in api_error_msg:
+        return {
+            "emotion": "sad",
+            "display_text": "⚠️ सभी API Keys का Quota/Rate-Limit खत्म हो गया है!",
+            "voice_text": f"बॉस, आपने '{user_text}' बोला, पर अभी आपकी सारी Gemini API Keys पर रेट लिमिट या कोटा खत्म हो गया है! थोड़ा रुकिए या नई कीज़ जोड़िए।",
+            "roman_text": f"Boss, aapne '{user_text}' bola, par abhi aapki saari Gemini API Keys par rate limit ya quota khatam ho gaya hai!",
+            "steps": []
+        }
+    elif "No API keys" in api_error_msg:
+        return {
+            "emotion": "sad",
+            "display_text": "⚠️ कोई Gemini API Key नहीं मिली!",
+            "voice_text": "बॉस, अभी कोई भी Gemini API Key नहीं डली है! मुझ पर राइट-क्लिक करके अपनी API Keys पेस्ट कर दीजिए।",
+            "roman_text": "Boss, abhi koi bhi Gemini API Key nahi dali hai! Mujh par right-click karke apni API Keys paste kar dijiye.",
+            "steps": []
+        }
+    else:
+        return {
+            "emotion": "sad",
+            "display_text": f"⚠️ API/Network Error: {api_error_msg[:55]}",
+            "voice_text": f"बॉस, मैंने '{user_text}' सुन लिया, लेकिन अभी Gemini सर्वर या इंटरनेट से कनेक्शन में एरर आ रहा है!",
+            "roman_text": f"Boss, maine '{user_text}' sun liya, lekin abhi Gemini server ya internet se connection me error aa raha hai!",
+            "steps": []
+        }
+
 
 def call_resilient_multi_brain(config, chat_history, user_text, pil_images=None, wav_bytes=None):
-    """
-    Total Brain Execution Time is strictly < 4.5 seconds!
-    Tries Fast Gemini -> Fast Free Cloud AI -> Instant Local Brain.
-    """
     gemini_keys = get_gemini_keys_list(config.get("api_key", ""))
+    last_api_error = "No API keys added"
 
     if gemini_keys:
         try:
-            parsed, raw_str = call_gemini_provider_fast(gemini_keys, chat_history, user_text, pil_images, wav_bytes)
+            parsed, raw_str = call_gemini_provider_10plus_keys(
+                gemini_keys, chat_history, user_text, pil_images, wav_bytes
+            )
             chat_history.append({"role": "user", "parts": [{"text": user_text}]})
             chat_history.append({"role": "model", "parts": [{"text": raw_str}]})
             if len(chat_history) > 8:
                 del chat_history[:2]
-            return parsed, "GeminiFast"
+            return parsed, "GeminiPool"
         except Exception as e:
-            print(f"[Fast Gemini Switch]: {e}")
+            last_api_error = str(e)
+            print(f"[Gemini Pool Alert]: {last_api_error}")
 
-    if not wav_bytes:
-        try:
-            parsed, raw_str = call_keyless_free_cloud_llm_fast(chat_history, user_text, pil_images)
-            chat_history.append({"role": "user", "parts": [{"text": user_text}]})
-            chat_history.append({"role": "model", "parts": [{"text": raw_str}]})
-            if len(chat_history) > 8:
-                del chat_history[:2]
-            return parsed, "FreeCloudFast"
-        except Exception as e:
-            print(f"[Free Cloud Switch]: {e}")
+    return execute_local_action_or_report_real_error(user_text, last_api_error), "DiagnosticOrLocal"
 
-    return local_smart_multitask_brain(user_text), "InstantLocal"
 
 def generate_proactive_interaction(config, chat_history, active_win_title, cam_img=None):
     ram_pct = int(psutil.virtual_memory().percent)
@@ -377,8 +365,7 @@ def generate_proactive_interaction(config, chat_history, active_win_title, cam_i
     except Exception:
         cute_lines = [
             ("अरे बॉस, इतनी देर से काम कर रहे हो! थोड़ा पानी पी लो और मुझसे भी बात कर लो ना!", "Are boss, itni der se kaam kar rahe ho! Thoda paani pee lo aur mujhse bhi baat kar lo na!", "shy"),
-            ("हम्म... क्या चल रहा है स्क्रीन पर? अगर मेरी कोई मदद चाहिए तो बस 'Hello Moon' बोल देना!", "Hmm... kya chal raha hai screen par? Agar meri koi madad chahiye toh bas 'Hello Moon' bol dena!", "happy"),
-            ("ओए! मुझे भूल तो नहीं गए ना? मैं यहीं बैठी आपको देख रही हूँ, हेहे!", "Oye! Mujhe bhool toh nahi gaye na? Main yahin baithi aapko dekh rahi hoon, hehe!", "excited"),
+            ("हम्म... क्या चल रहा है स्क्रीन पर? अगर मेरी कोई मदद चाहिए तो बस 'Moon' बोल देना!", "Hmm... kya chal raha hai screen par? Agar meri koi madad chahiye toh bas 'Moon' bol dena!", "happy"),
         ]
         vt, rt, em = random.choice(cute_lines)
         return {"emotion": em, "display_text": vt, "voice_text": vt, "roman_text": rt, "steps": []}

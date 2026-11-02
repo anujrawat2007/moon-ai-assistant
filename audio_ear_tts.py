@@ -20,7 +20,7 @@ except Exception:
     AUDIO_AVAILABLE = False
 
 try:
-    import webrtcvad
+    webrtcvad = __import__("webrtcvad")
     WEBRTCVAD_AVAILABLE = True
 except Exception:
     WEBRTCVAD_AVAILABLE = False

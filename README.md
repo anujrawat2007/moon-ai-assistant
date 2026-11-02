@@ -80,3 +80,4 @@ pip install -r requirements.txt
 ## 🔒 Privacy & Safety
 - Your API keys are stored only locally in `moon_config.json` and are never committed or uploaded.
 - Screen and webcam captures are only taken when triggered by you and processed securely.
+
