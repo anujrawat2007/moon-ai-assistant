@@ -1,17 +1,14 @@
-# Core AI Brain & STT (Free Cloud)
-google-genai
-groq
-python-dotenv
-requests
+# GUI & Graphics
+PyQt5>=5.15.9
+pillow>=10.0.0
+opencv-python>=4.8.0
 
-# Audio & Voice (Free Edge-TTS + Direct Hardware Sound)
-edge-tts
-sounddevice
-soundfile
-numpy
+# Audio & Voice Processing
+edge-tts>=6.1.9
+sounddevice>=0.4.6
+speechrecognition>=3.10.0
+numpy>=1.24.0
 
-# Vision & Desktop Automation
-pillow
-pyautogui
-mss
-opencv-python-headless
+# System Automation & Monitoring
+pyautogui>=0.9.54
+psutil>=5.9.5

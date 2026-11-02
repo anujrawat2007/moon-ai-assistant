@@ -1,0 +1,16 @@
+{
+  "api_key": "YOUR_GEMINI_API_KEY_1 , YOUR_GEMINI_API_KEY_2",
+  "voice_profile": "gemini_zephyr",
+  "show_subtitles": true,
+  "wake_word_only": true,
+  "proactive_mode": false,
+  "save_gemini_for_voice": false,
+  "mic_device_index": 1,
+  "tts_pitch_hz": 15,
+  "tts_rate_pct": 10,
+  "masti_level": 75,
+  "mic_muted": false,
+  "screen_vision_enabled": true,
+  "webcam_access_enabled": true,
+  "proactive_idle_minutes": 5
+}

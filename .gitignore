@@ -1,27 +1,30 @@
-# Environment variables (Never commit secret API keys)
+# Credentials & Secrets (Never commit API keys)
+moon_config.json
+api_pool.json
 .env
 .env.local
 .env.*.local
 
-# Python Virtual Environment
-venv/
-ENV/
-env/
-.venv/
-
-# Byte-compiled / optimized files
+# Python cache & virtual environments
 __pycache__/
 *.py[cod]
 *$py.class
+venv/
+.venv/
+env/
+ENV/
 
-# Temporary audio files
-data/*.mp3
-data/*.wav
-data/temp_*
+# Audio cache & recordings
+moon_assets/voice_cache*/
+*.wav
+*.mp3
 
-# OS / Editor files
+# Logs & temporary files
+*.log
+temp_*
+
+# OS & Editor files
 .vscode/
 .idea/
 Thumbs.db
 Desktop.ini
-
