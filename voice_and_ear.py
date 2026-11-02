@@ -238,14 +238,14 @@ def generate_gemini_hd_tts_multi_key(api_keys_str, text_to_speak, voice_name="Ze
     keys_to_attempt = [healthy_keys[(TTS_KEY_IDX + i) % len(healthy_keys)] for i in range(len(healthy_keys))]
     TTS_KEY_IDX = (TTS_KEY_IDX + 1) % len(healthy_keys)
 
-    models_to_try = ["gemini-2.5-flash-preview-tts", "gemini-2.0-flash"]
+    models_to_try = ["gemini-2.5-flash-preview-tts", "gemini-3.1-flash-tts-preview", "gemini-3.8-flash-tts"]
 
     for cur_key in keys_to_attempt:
         for model_name in models_to_try:
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={cur_key}"
             req = urllib.request.Request(url, data=body_bytes, headers={"Content-Type": "application/json"}, method="POST")
             try:
-                with urllib.request.urlopen(req, timeout=6.0) as resp:
+                with urllib.request.urlopen(req, timeout=10.0) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                     cand = data.get("candidates", [{}])[0]
                     parts = cand.get("content", {}).get("parts", [{}])

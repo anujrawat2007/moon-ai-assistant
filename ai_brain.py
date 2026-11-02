@@ -403,7 +403,7 @@ def parse_json_response_text(text_out):
 
 def call_gemini_provider_fast(api_keys, chat_history, enriched_text, pil_images=None, wav_bytes=None):
     global KEY_INDEX
-    models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    models = ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3-flash-preview", "gemini-3.1-flash-lite"]
     if wav_bytes:
         prompt_with_audio_hint = (
             f"[LIVE VOICE AUDIO ATTACHED]: Listen directly to the user's spoken Hindi/Hinglish voice in the attached audio clip! "
@@ -438,12 +438,17 @@ def call_gemini_provider_fast(api_keys, chat_history, enriched_text, pil_images=
             payload = {
                 "system_instruction": {"parts": [{"text": sys_full}]},
                 "contents": contents,
-                "generationConfig": {"responseMimeType": "application/json", "temperature": 0.65, "maxOutputTokens": 850}
+                "generationConfig": {
+                    "responseMimeType": "application/json",
+                    "temperature": 0.65,
+                    "maxOutputTokens": 850,
+                    "thinkingConfig": {"thinkingBudget": 0}
+                }
             }
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={current_key}"
             req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
             try:
-                with urllib.request.urlopen(req, timeout=13.0) as resp:
+                with urllib.request.urlopen(req, timeout=8.0) as resp:
                     resp_data = json.loads(resp.read().decode("utf-8"))
                     resp_parts = resp_data["candidates"][0]["content"]["parts"]
                     raw_text = next((p["text"] for p in resp_parts if not p.get("thought") and "text" in p), "")
@@ -451,8 +456,8 @@ def call_gemini_provider_fast(api_keys, chat_history, enriched_text, pil_images=
                         raw_text = resp_parts[-1].get("text", "")
                     return parse_json_response_text(raw_text)
             except urllib.error.HTTPError as he:
-                if he.code in (400, 401, 403, 429):
-                    KEY_COOLDOWN[current_key] = time.time() + 90.0
+                if he.code in (400, 401, 403, 429, 503):
+                    KEY_COOLDOWN[current_key] = time.time() + (60.0 if he.code != 503 else 15.0)
                     break
                 continue
             except Exception:

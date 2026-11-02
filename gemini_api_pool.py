@@ -162,7 +162,13 @@ class GeminiAPIPoolManager:
         self.status_callback = status_callback
         self.keys_data = {}
         self.active_key_id = None
-        self.models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+        self.models = [
+            "gemini-3.5-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3-flash-preview",
+            "gemini-3.1-flash-lite",
+        ]
         self.load_pool()
 
     def _log(self, msg, level="INFO"):
@@ -376,10 +382,10 @@ class GeminiAPIPoolManager:
         """Pings a single Gemini key with a lightweight 1-token request to measure live latency and health."""
         payload = {
             "contents": [{"role": "user", "parts": [{"text": "ping"}]}],
-            "generationConfig": {"maxOutputTokens": 4}
+            "generationConfig": {"maxOutputTokens": 4, "thinkingConfig": {"thinkingBudget": 0}}
         }
         body_bytes = json.dumps(payload).encode("utf-8")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key_str}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={key_str}"
         req = urllib.request.Request(url, data=body_bytes, headers={"Content-Type": "application/json"}, method="POST")
         t0 = time.perf_counter()
         try:
@@ -464,8 +470,7 @@ class GeminiAPIPoolManager:
                 }
                 if expect_json:
                     gen_cfg["responseMimeType"] = "application/json"
-                if "2.5" in model_name:
-                    gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
+                gen_cfg["thinkingConfig"] = {"thinkingBudget": 0}
 
                 payload = {
                     "system_instruction": {"parts": [{"text": sys_prompt}]},
@@ -650,31 +655,27 @@ Respond ONLY in valid JSON:
         }
         body_bytes = json.dumps(payload).encode("utf-8")
 
-        for key_str in candidate_keys[:2]:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key={key_str}"
-            req = urllib.request.Request(url, data=body_bytes, headers={"Content-Type": "application/json"}, method="POST")
-            t0 = time.perf_counter()
-            try:
-                with urllib.request.urlopen(req, timeout=6.0) as resp:
-                    data = json.loads(resp.read().decode("utf-8"))
-                    b64_pcm = data["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
-                    pcm_bytes = base64.b64decode(b64_pcm)
-                    import wave
-                    with wave.open(cache_path, "wb") as wf:
-                        wf.setnchannels(1)
-                        wf.setsampwidth(2)
-                        wf.setframerate(24000)
-                        wf.writeframes(pcm_bytes)
-                    self._record_success(key_str, (time.perf_counter() - t0) * 1000.0)
-                    return cache_path
-            except urllib.error.HTTPError as he:
-                err_body = ""
+        tts_models = ["gemini-2.5-flash-preview-tts", "gemini-3.1-flash-tts-preview", "gemini-3.8-flash-tts"]
+        for key_str in candidate_keys[:3]:
+            for tts_model in tts_models:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{tts_model}:generateContent?key={key_str}"
+                req = urllib.request.Request(url, data=body_bytes, headers={"Content-Type": "application/json"}, method="POST")
+                t0 = time.perf_counter()
                 try:
-                    err_body = he.read().decode("utf-8", errors="ignore")
+                    with urllib.request.urlopen(req, timeout=6.0) as resp:
+                        data = json.loads(resp.read().decode("utf-8"))
+                        b64_pcm = data["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
+                        pcm_bytes = base64.b64decode(b64_pcm)
+                        import wave
+                        with wave.open(cache_path, "wb") as wf:
+                            wf.setnchannels(1)
+                            wf.setsampwidth(2)
+                            wf.setframerate(24000)
+                            wf.writeframes(pcm_bytes)
+                        self._record_success(key_str, (time.perf_counter() - t0) * 1000.0)
+                        return cache_path
+                except urllib.error.HTTPError:
+                    continue
                 except Exception:
-                    err_body = str(he)
-                self._record_failure(key_str, he.code, err_body)
-                continue
-            except Exception:
-                continue
+                    continue
         return None
