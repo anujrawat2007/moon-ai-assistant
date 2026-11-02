@@ -17,6 +17,7 @@ REQUIRED_PACKAGES = [
     ("sounddevice", "sounddevice"),
 ]
 
+
 def ensure_dependencies():
     for mod, pkg in REQUIRED_PACKAGES:
         try:
@@ -24,6 +25,7 @@ def ensure_dependencies():
         except ImportError:
             print(f"[Moon Setup] Installing {pkg}...")
             subprocess.run([sys.executable, "-m", "pip", "install", pkg], check=False)
+
 
 ensure_dependencies()
 
@@ -37,14 +39,22 @@ SPRITE_VERSION_FILE = os.path.join(ASSETS_DIR, "version_v4.txt")
 CONFIG_FILE = "moon_config.json"
 
 DEFAULT_CONFIG = {
-    "api_key": "",
-    "voice_profile": "gemini_leda",
+    "api_key": "YOUR_GEMINI_API_KEY_1 , YOUR_GEMINI_API_KEY_2",
+    "voice_profile": "gemini_zephyr",
     "show_subtitles": True,
     "wake_word_only": True,
-    "proactive_mode": True,
+    "proactive_mode": False,
     "save_gemini_for_voice": False,
-    "mic_device_index": None
+    "mic_device_index": 1,
+    "tts_pitch_hz": 15,
+    "tts_rate_pct": 10,
+    "masti_level": 75,
+    "mic_muted": False,
+    "screen_vision_enabled": True,
+    "webcam_access_enabled": True,
+    "proactive_idle_minutes": 5
 }
+
 
 def load_config():
     cfg = dict(DEFAULT_CONFIG)
@@ -52,17 +62,25 @@ def load_config():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 saved = json.load(f)
-                cfg.update(saved)
-        except Exception:
-            pass
+                if isinstance(saved, dict):
+                    cfg.update(saved)
+        except Exception as e:
+            print(f"[Config Load Notice]: {e}")
+    else:
+        save_config_file(cfg)
     return cfg
 
+
 def save_config_file(cfg):
+    merged = dict(DEFAULT_CONFIG)
+    if isinstance(cfg, dict):
+        merged.update(cfg)
     try:
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2, ensure_ascii=False)
+            json.dump(merged, f, indent=2, ensure_ascii=False)
     except Exception as e:
         print(f"[Config Save Notice]: {e}")
+
 
 def trim_own_memory():
     try:
@@ -71,6 +89,7 @@ def trim_own_memory():
             ctypes.windll.kernel32.SetProcessWorkingSetSize(-1, -1, -1)
     except Exception:
         pass
+
 
 def remove_bg(img_path):
     img = cv2.imread(img_path)
@@ -99,6 +118,7 @@ def remove_bg(img_path):
     rgba = cv2.cvtColor(img, cv2.COLOR_BGR2RGBA)
     rgba[:, :, 3] = alpha
     return Image.fromarray(rgba).resize((736, 900), Image.LANCZOS)
+
 
 def build_sprites_if_needed(source_img):
     os.makedirs(ASSETS_DIR, exist_ok=True)

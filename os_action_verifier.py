@@ -82,6 +82,16 @@ class OSActionAndVerifierEngine:
 
     @staticmethod
     def copy_to_clipboard(text):
+        if not text:
+            return
+        try:
+            from PyQt5.QtWidgets import QApplication
+            cb = QApplication.clipboard()
+            if cb is not None:
+                cb.setText(text)
+                return
+        except Exception:
+            pass
         try:
             p = subprocess.Popen(["clip"], stdin=subprocess.PIPE, shell=True)
             p.communicate(input=text.encode("utf-16-le"))

@@ -31,7 +31,7 @@ from proactive_daemon import ProactiveIdleDaemon
 
 DEFAULT_CONFIG = {
     "api_key": "",
-    "voice_profile": "swara_anime",
+    "voice_profile": "gemini_zephyr",
     "tts_pitch_hz": 15,
     "tts_rate_pct": 10,
     "masti_level": 75,
@@ -56,7 +56,7 @@ def load_config():
         except Exception:
             pass
     if cfg.get("voice_profile") not in VOICE_PROFILES:
-        cfg["voice_profile"] = "swara_anime"
+        cfg["voice_profile"] = "gemini_zephyr"
     return cfg
 
 

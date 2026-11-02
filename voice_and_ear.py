@@ -15,6 +15,9 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import edge_tts
 
+if os.name == "nt":
+    import winsound
+
 from config_and_sprites import VOICE_CACHE_DIR
 
 try:
@@ -25,6 +28,68 @@ except Exception:
     MIC_AVAILABLE = False
 
 LAST_MOON_SPOKE_TIME = 0.0
+STOP_AUDIO_FLAG = False
+GEMINI_TTS_PROJECT_EXHAUSTED_UNTIL = 0.0
+_STT_EXECUTOR = ThreadPoolExecutor(max_workers=2)
+
+# =====================================================================
+# SMART HINGLISH & WAKE-WORD AUTO-CORRECTOR
+# Fixes Google STT turning "Hello Moon" into "Hello Google" / "Hello मोहन"
+# =====================================================================
+PHONETIC_CORRECTIONS = {
+    r"\b(hello|hey|hi|oye|suno|are)\s+(?:google|mohan|mona|monu|mun|mon|noon|room|phone|poon|mahal|mool)\b": r"\1 moon",
+    r"(हेलो|हे|हाय|ओए|सुनो|अरे)\s*(?:गूगल|मोहन|मोना|मोनू|मुन|मोन|नून|रूम|फोन)": r"\1 मून",
+    r"\b(mun|mon|monu|mona|maun|noon)\b": "moon",
+    r"(मुन|मोन|मोनू|मोना|मौन|नून)": "मून",
+    r"\b(ri\s*fresh|re\s*fresh|refesh|rifresh)\b": "refresh",
+    r"(रिफ्रेश|री\s*फ्रेश|रेफ्रेश)": "refresh",
+    r"\b(vs\s*kod|v\s*s\s*code|visual\s*code)\b": "vscode",
+    r"\b(krom|krome|crome)\b": "chrome",
+    r"\b(u\s*tube|you\s*tube|utube)\b": "youtube",
+}
+
+
+def autocorrect_hinglish_stt(raw_text):
+    if not raw_text:
+        return ""
+    txt = raw_text.strip()
+    for pat, repl in PHONETIC_CORRECTIONS.items():
+        txt = re.sub(pat, repl, txt, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", txt).strip()
+
+
+def extract_valid_gemini_keys(api_keys_str):
+    keys = []
+    if api_keys_str:
+        for k in re.split(r"[,;\n\s]+", api_keys_str.strip()):
+            k = k.strip()
+            if len(k) >= 25 and not k.startswith("YOUR_") and not k.startswith(("gsk_", "sk-")):
+                keys.append(k)
+    if not keys and os.path.exists("api_pool.json"):
+        try:
+            with open("api_pool.json", "r", encoding="utf-8") as f:
+                pdata = json.load(f)
+                for item in pdata.get("keys", []):
+                    k = item.get("key", "").strip()
+                    if len(k) >= 25 and k not in keys:
+                        keys.append(k)
+        except Exception:
+            pass
+    return keys
+
+
+def stop_current_playback():
+    global STOP_AUDIO_FLAG
+    STOP_AUDIO_FLAG = True
+    if os.name == "nt":
+        try:
+            winsound.PlaySound(None, winsound.SND_PURGE)
+        except Exception:
+            pass
+        try:
+            ctypes.windll.winmm.mciSendStringW("stop all", None, 0, None)
+        except Exception:
+            pass
 
 
 def mark_moon_finished_speaking():
@@ -36,159 +101,179 @@ def is_laptop_echo_active():
     return (time.time() - LAST_MOON_SPOKE_TIME) < 0.65
 
 
-def get_gemini_keys_list(api_key_str):
-    if not api_key_str:
-        return []
-    return [k.strip() for k in re.split(r"[,;\n]+", api_key_str) if k.strip()]
-
-
-# STRICT "MOON" WAKE-WORD PATTERNS ONLY
+# Require 'moon' or explicit wake phrase so random words never false-trigger!
 WAKE_WORD_PATTERNS = [
-    r"\bmoon\b", r"\bmun\b", r"\bmon\b", r"\bmonu\b", r"\bmona\b", r"\bmaun\b", r"\bnoon\b",
-    r"मून", r"मुन", r"मोन", r"मोनू", r"मोना", r"मौन", r"नून"
+    r"\bhello\s+moon\b", r"\bsuno\s+moon\b", r"\bhey\s+moon\b", r"\bhi\s+moon\b",
+    r"\boye\s+moon\b", r"\bare\s+moon\b", r"\bmoon\b", r"\bsuzune\b",
+    r"हेलो\s*मून", r"सुनो\s*मून", r"हे\s*मून", r"हाय\s*मून", r"मून", r"सुजुने"
 ]
 
 
 def check_and_strip_wake_word(text):
-    """
-    STRICT WAKE-WORD CHECK:
-    Triggers ONLY if the user actually says 'Moon' (or phonetic variations like मून/mun/mon)
-    alone or with other words! Never triggers on random background talk.
-    """
     if not text:
         return False, ""
-    clean_in = text.strip()
+    clean_in = autocorrect_hinglish_stt(text)
     low = clean_in.lower()
-
-    matched = False
-    for pat in WAKE_WORD_PATTERNS:
-        if re.search(pat, low, flags=re.I):
-            matched = True
-            break
-
-    if not matched:
+    if not any(re.search(pat, low, flags=re.I) for pat in WAKE_WORD_PATTERNS):
         return False, clean_in
 
-    # Remove leading greeting + "Moon" if at the start of the sentence
     cleaned = re.sub(
-        r"^(?:hello|hey|hi|suno|sun\s+na|sun|oye|are|अरे|हेलो|सुनो|हे|हाय|ओए)?\s*"
-        r"(?:moon|मून|मुन|मोन|मोनू|मोना|मौन|mun|mon|monu|mona|maun|noon|नून)\s*"
-        r"(?:yaar|यार|जी|ji|babe|baby)?\b[\s,.:!\-]*",
-        "",
-        clean_in,
-        flags=re.I
+        r"^(?:hello|hey|hi|suno|sun|oye|are|अरे|हेलो|सुनो|हे|हाय|ओए)?\s*(?:moon|मून|suzune|सुजुने)\b[\s,.:!\-]*",
+        "", clean_in, flags=re.I
     ).strip()
-
-    # Also strip trailing "Moon" if user said e.g. "YouTube kholo Moon"
-    cleaned = re.sub(
-        r"[\s,.:!\-]*\b(?:moon|मून|मुन|मोन|mun|mon)\s*$",
-        "",
-        cleaned,
-        flags=re.I
-    ).strip()
-
-    # If the user ONLY said "Moon" or "Hello Moon", greet them back warmly
-    if not cleaned:
-        return True, "हेलो मून! सुनो"
-
-    return True, cleaned
+    return True, (cleaned if cleaned else "हेलो मून")
 
 
-# LOCKED TO ONLY GEMINI LEDA CUTE VOICE
+# =====================================================================
+# RICH MULTI-VOICE PROFILES (Gemini HD Neural + Edge Waifu Voices)
+# =====================================================================
 VOICE_PROFILES = {
-    "gemini_leda": {
-        "label": "💎 Gemini Leda HD (Cute Emotional Anime Voice)",
+    "gemini_zephyr": {
+        "label": "🌸 Gemini Zephyr HD (Warm & Playful Anime Friend)",
         "type": "gemini_tts",
-        "voice": "Leda",
+        "voice": "Zephyr",
         "fallback_voice": "hi-IN-SwaraNeural",
         "fallback_pitch": "+12Hz",
         "fallback_rate": "+8%",
         "fallback_script": "devanagari"
+    },
+    "gemini_leda": {
+        "label": "💎 Gemini Leda HD (Cute Natural Hindi + English Anime Voice)",
+        "type": "gemini_tts",
+        "voice": "Leda",
+        "fallback_voice": "hi-IN-SwaraNeural",
+        "fallback_pitch": "+6Hz",
+        "fallback_rate": "+6%",
+        "fallback_script": "devanagari"
+    },
+    "gemini_aoede": {
+        "label": "✨ Gemini Aoede HD (Sweet High-Energy Anime Voice)",
+        "type": "gemini_tts",
+        "voice": "Aoede",
+        "fallback_voice": "hi-IN-SwaraNeural",
+        "fallback_pitch": "+14Hz",
+        "fallback_rate": "+10%",
+        "fallback_script": "devanagari"
+    },
+    "swara_anime": {
+        "label": "🎀 Swara Neural Anime (Ultra-Fast Natural Hindi TTS)",
+        "type": "edge_tts",
+        "voice": "hi-IN-SwaraNeural",
+        "pitch": "+12Hz",
+        "rate": "+8%",
+        "script": "devanagari"
+    },
+    "ana_cute": {
+        "label": "🍭 Ana Sweet Waifu (Cute English + Anime Accent)",
+        "type": "edge_tts",
+        "voice": "en-US-AnaNeural",
+        "pitch": "+10Hz",
+        "rate": "+8%",
+        "script": "roman"
+    },
+    "nanami_waifu": {
+        "label": "🎌 Nanami Waifu (Japanese Anime Girl Accent)",
+        "type": "edge_tts",
+        "voice": "ja-JP-NanamiNeural",
+        "pitch": "+10Hz",
+        "rate": "+5%",
+        "script": "roman"
     }
 }
 
-EMOTION_DIRECTIONS = {
-    "happy": "Say in a super cute, warm, cheerful, and natural anime girl voice: ",
-    "excited": "Say in an excited, bubbly, happy, and energetic anime girl voice: ",
-    "shy": "Say in a soft, sweet, bashful, and slightly shy anime girl voice: ",
-    "angry": "Say in a cute, playful, pouting tsundere anime girl voice: ",
-    "sad": "Say in a gentle, caring, soft, and emotional anime girl voice: ",
-    "thinking": "Say in a curious, cute, thoughtful anime girl voice: ",
-}
+
+def sanitize_tts_text(text):
+    if not text:
+        return ""
+    txt = re.sub(r"^(?:say|speak)(?:\s+in\b)?\s*.*?:", "", text, flags=re.IGNORECASE).strip()
+    txt = re.sub(r"\*\*([^*]+)\*\*", r"\1", txt)
+    txt = re.sub(r"\*([^*]+)\*", r"\1", txt)
+    txt = re.sub(r"\[[^\]]+\]|\([^\)]+\)", "", txt).strip()
+    emoji_pattern = re.compile(
+        "[\U00010000-\U0010ffff]|[\u2600-\u27bf]|[\u2300-\u23ff]|[\u2b50-\u2b55]|[\ufe0f]",
+        flags=re.UNICODE
+    )
+    txt = emoji_pattern.sub("", txt)
+    return re.sub(r"\s+", " ", txt).strip()
+
 
 TTS_COOLDOWN = {}
 TTS_KEY_IDX = 0
 
 
-def generate_gemini_hd_tts_multi_key(api_keys_str, text_to_speak, voice_name="Leda", emotion="happy"):
+def generate_gemini_hd_tts_multi_key(api_keys_str, text_to_speak, voice_name="Zephyr", emotion="happy"):
     """
-    10+ API KEY ROTATOR FOR GEMINI LEDA VOICE:
-    Rotates across ALL healthy keys in your list (no 2-attempt limit!) so Leda voice never drops out.
+    Ultra-resilient Gemini Neural TTS with seamless multi-key load balancing.
+    Never blocks all keys when a single key is rate-limited!
     """
     global TTS_KEY_IDX
-    api_keys = get_gemini_keys_list(api_keys_str)
+    now = time.time()
+
+    api_keys = extract_valid_gemini_keys(api_keys_str)
     if not api_keys:
         return None
 
     os.makedirs(VOICE_CACHE_DIR, exist_ok=True)
-    clean_text = text_to_speak.strip()
-    cache_key = hashlib.md5(f"v19_leda::{voice_name}::{emotion}::{clean_text}".encode("utf-8")).hexdigest()
+    clean_text = sanitize_tts_text(text_to_speak) or text_to_speak.strip()
+    target_voice = voice_name or "Zephyr"
+    cache_key = hashlib.md5(f"v46_gemini::{target_voice}::{clean_text}".encode("utf-8")).hexdigest()
     cached_wav = os.path.join(VOICE_CACHE_DIR, f"{cache_key}.wav")
     if os.path.exists(cached_wav) and os.path.getsize(cached_wav) > 1000:
         return cached_wav
 
-    direction = EMOTION_DIRECTIONS.get(emotion, EMOTION_DIRECTIONS["happy"])
-    directed_text = f"{direction}{clean_text}"
-
     payload = {
-        "contents": [{"parts": [{"text": directed_text}]}],
+        "contents": [{"parts": [{"text": clean_text}]}],
         "generationConfig": {
             "responseModalities": ["AUDIO"],
             "speechConfig": {
-                "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Leda"}}
+                "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": target_voice}}
             }
         }
     }
     body_bytes = json.dumps(payload).encode("utf-8")
-    now = time.time()
-
     healthy_keys = [k for k in api_keys if TTS_COOLDOWN.get(k, 0) < now]
     if not healthy_keys:
-        healthy_keys = api_keys
+        return None
 
-    # Try across ALL available keys in the pool (up to 15 keys)
-    for _ in range(len(healthy_keys)):
-        cur_key = healthy_keys[TTS_KEY_IDX % len(healthy_keys)]
-        TTS_KEY_IDX += 1
+    keys_to_attempt = [healthy_keys[(TTS_KEY_IDX + i) % len(healthy_keys)] for i in range(len(healthy_keys))]
+    TTS_KEY_IDX = (TTS_KEY_IDX + 1) % len(healthy_keys)
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key={cur_key}"
-        req = urllib.request.Request(url, data=body_bytes, headers={"Content-Type": "application/json"}, method="POST")
-        try:
-            with urllib.request.urlopen(req, timeout=8.5) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                b64_pcm = data["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
-                pcm_bytes = base64.b64decode(b64_pcm)
-                with wave.open(cached_wav, "wb") as wf:
-                    wf.setnchannels(1)
-                    wf.setsampwidth(2)
-                    wf.setframerate(24000)
-                    wf.writeframes(pcm_bytes)
-                return cached_wav
-        except urllib.error.HTTPError as he:
-            if he.code == 429:
-                TTS_COOLDOWN[cur_key] = time.time() + 30.0
-            elif he.code in (400, 401, 403):
-                TTS_COOLDOWN[cur_key] = time.time() + 300.0
-            continue
-        except Exception:
-            continue
+    models_to_try = ["gemini-2.5-flash-preview-tts", "gemini-2.0-flash"]
+
+    for cur_key in keys_to_attempt:
+        for model_name in models_to_try:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={cur_key}"
+            req = urllib.request.Request(url, data=body_bytes, headers={"Content-Type": "application/json"}, method="POST")
+            try:
+                with urllib.request.urlopen(req, timeout=6.0) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    cand = data.get("candidates", [{}])[0]
+                    parts = cand.get("content", {}).get("parts", [{}])
+                    inline = parts[0].get("inlineData", {})
+                    b64_pcm = inline.get("data")
+                    if b64_pcm:
+                        pcm_bytes = base64.b64decode(b64_pcm)
+                        with wave.open(cached_wav, "wb") as wf:
+                            wf.setnchannels(1)
+                            wf.setsampwidth(2)
+                            wf.setframerate(24000)
+                            wf.writeframes(pcm_bytes)
+                        print(f"💎 [Gemini {target_voice} HD Voice]: Key ...{cur_key[-4:]}")
+                        return cached_wav
+            except urllib.error.HTTPError as he:
+                if he.code in (400, 401, 403, 429):
+                    TTS_COOLDOWN[cur_key] = time.time() + 180.0
+                    break
+                continue
+            except Exception:
+                continue
     return None
 
 
 def generate_edge_anime_tts_cached(text_to_speak, voice_name="hi-IN-SwaraNeural", pitch="+12Hz", rate="+8%"):
     os.makedirs(VOICE_CACHE_DIR, exist_ok=True)
-    clean_text = text_to_speak.strip()
-    cache_key = hashlib.md5(f"edge_v19::{voice_name}::{pitch}::{rate}::{clean_text}".encode("utf-8")).hexdigest()
+    clean_text = sanitize_tts_text(text_to_speak) or text_to_speak.strip()
+    cache_key = hashlib.md5(f"edge_v46_nat::{voice_name}::{pitch}::{rate}::{clean_text}".encode("utf-8")).hexdigest()
     cached_mp3 = os.path.join(VOICE_CACHE_DIR, f"{cache_key}.mp3")
     if os.path.exists(cached_mp3) and os.path.getsize(cached_mp3) > 800:
         return cached_mp3
@@ -197,7 +282,7 @@ def generate_edge_anime_tts_cached(text_to_speak, voice_name="hi-IN-SwaraNeural"
     try:
         asyncio.set_event_loop(loop)
         comm = edge_tts.Communicate(clean_text, voice=voice_name, pitch=pitch, rate=rate)
-        loop.run_until_complete(asyncio.wait_for(comm.save(cached_mp3), timeout=6.0))
+        loop.run_until_complete(asyncio.wait_for(comm.save(cached_mp3), timeout=5.0))
         if os.path.exists(cached_mp3) and os.path.getsize(cached_mp3) > 500:
             return cached_mp3
     except Exception:
@@ -210,69 +295,76 @@ def generate_edge_anime_tts_cached(text_to_speak, voice_name="hi-IN-SwaraNeural"
     return None
 
 
-def play_wav_sounddevice(wav_path):
-    try:
-        with wave.open(wav_path, "rb") as wf:
-            sr_rate = wf.getframerate()
-            n_ch = wf.getnchannels()
-            sampwidth = wf.getsampwidth()
-            raw_bytes = wf.readframes(wf.getnframes())
-            dtype = np.int16 if sampwidth == 2 else np.uint8
-            audio_np = np.frombuffer(raw_bytes, dtype=dtype)
-            if n_ch > 1:
-                audio_np = audio_np.reshape(-1, n_ch)
-            sd.play(audio_np, samplerate=sr_rate)
-            sd.wait()
-            return True
-    except Exception:
-        return False
-
-
 def play_audio_windows(file_path, max_wait_seconds=22.0):
+    global STOP_AUDIO_FLAG
+    STOP_AUDIO_FLAG = False
     if not file_path or not os.path.exists(file_path):
         return
     abs_path = os.path.abspath(file_path)
     ext = os.path.splitext(abs_path)[1].lower()
-    if ext == ".wav" and MIC_AVAILABLE:
-        if play_wav_sounddevice(abs_path):
+
+    if ext == ".wav" and os.name == "nt":
+        try:
+            with wave.open(abs_path, "rb") as wf:
+                frames = wf.getnframes()
+                rate = wf.getframerate()
+                duration_s = frames / float(max(rate, 1))
+
+            winsound.PlaySound(abs_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            start_t = time.perf_counter()
+            while (time.perf_counter() - start_t) < min(duration_s + 0.15, max_wait_seconds):
+                if STOP_AUDIO_FLAG:
+                    winsound.PlaySound(None, winsound.SND_PURGE)
+                    break
+                time.sleep(0.03)
             mark_moon_finished_speaking()
             return
+        except Exception as e:
+            print(f"[winsound Notice]: {e}")
+
+    # Use Short Path for MCI so spaces in Windows paths never cause MCI 259 error
+    mci_path = abs_path
+    if os.name == "nt":
+        try:
+            buf = ctypes.create_unicode_buffer(512)
+            if ctypes.windll.kernel32.GetShortPathNameW(abs_path, buf, 512) > 0:
+                mci_path = buf.value
+        except Exception:
+            mci_path = abs_path
 
     alias = f"moon_snd_{int(time.time() * 1000)}_{threading.get_ident()}"
     winmm = ctypes.windll.winmm
     dev_type = "waveaudio" if ext == ".wav" else "mpegvideo"
     try:
-        winmm.mciSendStringW(f'open "{abs_path}" type {dev_type} alias {alias}', None, 0, None)
-        winmm.mciSendStringW(f'play {alias}', None, 0, None)
-
+        winmm.mciSendStringW(f'open "{mci_path}" type {dev_type} alias {alias}', None, 0, None)
+        winmm.mciSendStringW(f"setaudio {alias} volume to 1000", None, 0, None)
+        winmm.mciSendStringW(f"play {alias}", None, 0, None)
         buf = ctypes.create_unicode_buffer(128)
         start_t = time.time()
         while time.time() - start_t < max_wait_seconds:
-            time.sleep(0.05)
-            winmm.mciSendStringW(f'status {alias} mode', buf, 128, None)
-            mode = buf.value.strip().lower()
-            if mode not in ("playing", "seeking"):
+            if STOP_AUDIO_FLAG:
+                winmm.mciSendStringW(f"stop {alias}", None, 0, None)
+                break
+            time.sleep(0.04)
+            winmm.mciSendStringW(f"status {alias} mode", buf, 128, None)
+            if buf.value.strip().lower() not in ("playing", "seeking"):
                 break
     except Exception:
         pass
     finally:
         try:
-            winmm.mciSendStringW(f'close {alias}', None, 0, None)
+            winmm.mciSendStringW(f"close {alias}", None, 0, None)
         except Exception:
             pass
         mark_moon_finished_speaking()
 
 
-# =====================================================================
-# CLEAR OPEN-MIC VOICE DETECTOR (Works Without Earphones!)
-# =====================================================================
 def get_working_input_devices():
     devices = []
     if not MIC_AVAILABLE:
         return devices
     try:
-        all_devs = sd.query_devices()
-        for idx, d in enumerate(all_devs):
+        for idx, d in enumerate(sd.query_devices()):
             if d.get("max_input_channels", 0) > 0 and d.get("hostapi", 0) == 0:
                 name = d.get("name", f"Mic {idx}")
                 if "stereo mix" not in name.lower():
@@ -283,58 +375,25 @@ def get_working_input_devices():
 
 
 def compute_speech_formant_rms(audio_int16, sample_rate=16000, ignore_typing=False):
-    """
-    Tuned for Laptop/PC Open Microphones (WITHOUT Earphones):
-    Measures human vocal band energy (150Hz - 3800Hz) without crushing distant speech,
-    while rejecting steady low-frequency fan hum (<130Hz).
-    """
     if is_laptop_echo_active():
         return 0.0
-
     samples = audio_int16.astype(np.float32).flatten()
-    if len(samples) == 0:
+    if len(samples) < 32:
         return 0.0
     samples = samples - np.mean(samples)
-
-    fft_mag = np.abs(np.fft.rfft(samples)) + 1e-6
-    freqs = np.fft.rfftfreq(len(samples), d=1.0 / sample_rate)
-
-    # Human voice band (150Hz to 3800Hz) vs Low fan rumble (<130Hz)
-    voice_mask = (freqs >= 150.0) & (freqs <= 3800.0)
-    band_mag = fft_mag[voice_mask]
-    if len(band_mag) == 0:
-        return 0.0
-
-    # Compute RMS specifically in the human vocal frequency band
-    vocal_rms = float(np.sqrt(np.mean(band_mag ** 2)) / np.sqrt(len(samples)))
-    return vocal_rms
+    return float(np.sqrt(np.mean(samples ** 2)))
 
 
 def normalize_and_clean_wav_bytes(audio_int16, sample_rate=16000):
-    """
-    Far-Field Open-Mic Voice Enhancer:
-    - Removes fan rumble (<120Hz) and high-frequency hiss (>4200Hz)
-    - Uses percentile-based Auto-Gain Control (98th percentile instead of single-sample peak)
-      so a mouse click or tap doesn't make the user's voice quiet!
-    """
     samples = audio_int16.astype(np.float32).flatten()
-    if len(samples) == 0:
-        return audio_int16, b""
     samples = samples - np.mean(samples)
 
-    fft_vals = np.fft.rfft(samples)
-    freqs = np.fft.rfftfreq(len(samples), d=1.0 / sample_rate)
-    fft_vals[freqs < 120.0] *= 0.08
-    fft_vals[freqs > 4400.0] *= 0.25
-    clean = np.fft.irfft(fft_vals, n=len(samples))
+    peak = float(np.max(np.abs(samples)))
+    if peak > 8.0:
+        gain = min(24000.0 / peak, 9.0)
+        samples = samples * gain
 
-    # Percentile AGC so open-mic voice is boosted clearly even if there was a click
-    p98 = float(np.percentile(np.abs(clean), 98))
-    if p98 > 8.0:
-        gain = min(18000.0 / p98, 14.0)
-        clean = clean * gain
-
-    clean_int16 = np.clip(clean, -32767, 32767).astype(np.int16)
+    clean_int16 = np.clip(samples, -32767, 32767).astype(np.int16)
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
         wf.setnchannels(1)
@@ -345,7 +404,6 @@ def normalize_and_clean_wav_bytes(audio_int16, sample_rate=16000):
 
 
 def recognize_bilingual_fast(recognizer, clean_int16, sample_rate=16000):
-    """Accurate Bilingual (Hinglish: hi-IN + en-IN) Speech-to-Text."""
     audio_data = sr.AudioData(clean_int16.tobytes(), sample_rate, 2)
 
     def try_google(lang_code):
@@ -354,36 +412,37 @@ def recognize_bilingual_fast(recognizer, clean_int16, sample_rate=16000):
         except Exception:
             return None
 
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        fut_hi = ex.submit(try_google, "hi-IN")
-        fut_en = ex.submit(try_google, "en-IN")
-        try:
-            res_hi = fut_hi.result(timeout=4.5)
-        except Exception:
-            res_hi = None
-        try:
-            res_en = fut_en.result(timeout=4.5)
-        except Exception:
-            res_en = None
+    fut_hi = _STT_EXECUTOR.submit(try_google, "hi-IN")
+    fut_en = _STT_EXECUTOR.submit(try_google, "en-IN")
+    try:
+        res_hi = fut_hi.result(timeout=3.2)
+    except Exception:
+        res_hi = None
+    try:
+        res_en = fut_en.result(timeout=3.2)
+    except Exception:
+        res_en = None
 
-    # Prefer whichever transcript clearly captured the wake-word "Moon"
-    if res_en and re.search(r"\b(moon|mun|mon|monu)\b", res_en, re.I):
-        return res_en.strip()
-    if res_hi and re.search(r"(मून|मुन|मोन|मोनू)", res_hi, re.I):
-        return res_hi.strip()
-    if res_hi and res_hi.strip():
-        return res_hi.strip()
-    if res_en and res_en.strip():
-        return res_en.strip()
+    res_en_clean = autocorrect_hinglish_stt(res_en) if res_en else ""
+    res_hi_clean = autocorrect_hinglish_stt(res_hi) if res_hi else ""
+
+    if res_en_clean and re.search(r"\b(moon|suzune)\b", res_en_clean, re.I):
+        return res_en_clean
+    if res_hi_clean and re.search(r"(मून|सुजुने)", res_hi_clean, re.I):
+        return res_hi_clean
+    if res_hi_clean:
+        return res_hi_clean
+    if res_en_clean:
+        return res_en_clean
     return None
 
 
 def volume_bar_string(vol, threshold):
     ratio = vol / max(threshold, 1.0)
-    if ratio < 0.5:
+    if ratio < 0.45:
         return "▂"
-    elif ratio < 0.85:
+    elif ratio < 0.75:
         return "▂▄"
-    elif ratio < 1.15:
+    elif ratio < 1.0:
         return "▂▄▆"
     return "▂▄▆█"

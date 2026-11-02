@@ -30,17 +30,12 @@ from vision_screen_cam import ASSETS_DIR
 VOICE_CACHE_DIR = os.path.join(ASSETS_DIR, "voice_cache_v18_prod")
 
 VOICE_PROFILES = {
-    "swara_anime": {
-        "label": "🌸 Swara Expressive Anime Girl (Edge-TTS Neural - Default +15Hz/+10%)",
-        "type": "edge",
-        "voice": "hi-IN-SwaraNeural",
+    "gemini_zephyr": {
+        "label": "🌸 Gemini Zephyr HD (Warm & Playful Anime Friend)",
+        "type": "gemini_tts",
+        "voice": "Zephyr",
+        "fallback_voice": "hi-IN-SwaraNeural",
         "script": "devanagari"
-    },
-    "neerja_anime": {
-        "label": "🎀 Neerja Cute Hinglish Anime Dub (Edge-TTS Neural)",
-        "type": "edge",
-        "voice": "en-IN-NeerjaExpressiveNeural",
-        "script": "roman"
     },
     "gemini_leda": {
         "label": "💎 Gemini Leda HD + Swara Neural Fallback",
@@ -53,7 +48,31 @@ VOICE_PROFILES = {
         "label": "✨ Gemini Aoede HD + Neerja Neural Fallback",
         "type": "gemini_tts",
         "voice": "Aoede",
-        "fallback_voice": "en-IN-NeerjaExpressiveNeural",
+        "fallback_voice": "hi-IN-SwaraNeural",
+        "script": "devanagari"
+    },
+    "swara_anime": {
+        "label": "🎀 Swara Expressive Anime Girl (Edge-TTS Neural)",
+        "type": "edge",
+        "voice": "hi-IN-SwaraNeural",
+        "script": "devanagari"
+    },
+    "neerja_anime": {
+        "label": "💖 Neerja Cute Hinglish Anime Dub (Edge-TTS Neural)",
+        "type": "edge",
+        "voice": "en-IN-NeerjaExpressiveNeural",
+        "script": "roman"
+    },
+    "ana_cute": {
+        "label": "🍭 Ana Sweet Waifu (Cute English + Anime Accent)",
+        "type": "edge",
+        "voice": "en-US-AnaNeural",
+        "script": "roman"
+    },
+    "nanami_waifu": {
+        "label": "🎌 Nanami Waifu (Japanese Anime Girl Accent)",
+        "type": "edge",
+        "voice": "ja-JP-NanamiNeural",
         "script": "roman"
     }
 }
@@ -345,8 +364,15 @@ class AudioEarAndTTSManager:
             alias = f"moon_snd_{int(time.time() * 1000)}_{threading.get_ident()}"
             winmm = ctypes.windll.winmm
             dev_type = "waveaudio" if ext == ".wav" else "mpegvideo"
+            mci_path = abs_path
             try:
-                winmm.mciSendStringW(f'open "{abs_path}" type {dev_type} alias {alias}', None, 0, None)
+                pbuf = ctypes.create_unicode_buffer(512)
+                if ctypes.windll.kernel32.GetShortPathNameW(abs_path, pbuf, 512) > 0:
+                    mci_path = pbuf.value
+            except Exception:
+                mci_path = abs_path
+            try:
+                winmm.mciSendStringW(f'open "{mci_path}" type {dev_type} alias {alias}', None, 0, None)
                 winmm.mciSendStringW(f'play {alias}', None, 0, None)
                 buf = ctypes.create_unicode_buffer(128)
                 start_t = time.perf_counter()

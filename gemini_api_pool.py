@@ -162,7 +162,7 @@ class GeminiAPIPoolManager:
         self.status_callback = status_callback
         self.keys_data = {}
         self.active_key_id = None
-        self.models = ["gemini-2.5-flash", "gemini-2.0-flash"]
+        self.models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
         self.load_pool()
 
     def _log(self, msg, level="INFO"):
@@ -421,7 +421,7 @@ class GeminiAPIPoolManager:
             rgb_img = img.convert("RGB") if img.mode != "RGB" else img
             rgb_img.save(buf, format="JPEG", quality=72)
             b64_data = base64.b64encode(buf.getvalue()).decode("utf-8")
-            parts.append({"inline_data": {"mime_type": "image/jpeg", "data": b64_data}})
+            parts.append({"inlineData": {"mimeType": "image/jpeg", "data": b64_data}})
         return parts
 
     def generate_multimodal_response(
@@ -640,7 +640,7 @@ Respond ONLY in valid JSON:
             return None
 
         payload = {
-            "contents": [{"parts": [{"text": f"Say in a cute, expressive {emotion} anime girl voice: {text_to_speak}"}]}],
+            "contents": [{"parts": [{"text": text_to_speak}]}],
             "generationConfig": {
                 "responseModalities": ["AUDIO"],
                 "speechConfig": {
